@@ -22,7 +22,7 @@
 
 ```bash
 # 1. 下載腳本
-wget https://raw.githubusercontent.com/your-repo/setup_duckdns_homeassistant.sh
+wget https://github.com/Samuelcmk/DuckDNS_HA_HTTPS/blob/main/setup_duckdns_homeassistant.sh
 
 # 2. 設置執行權限
 chmod +x setup_duckdns_homeassistant.sh
