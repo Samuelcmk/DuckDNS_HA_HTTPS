@@ -372,10 +372,11 @@ $DUCKDNS_DOMAIN.duckdns.org {
 
     # 反向代理到 Home Assistant
     reverse_proxy localhost:8123 {
-        # 健康檢查
+        # 放寬健康檢查設定
         health_uri /
-        health_interval 30s
-        health_timeout 10s
+        health_interval 60s
+        health_timeout 30s
+        health_status 200-399
 
         # WebSocket 支持 (重要!)
         header_up Upgrade {http.request.header.Upgrade}
@@ -404,20 +405,8 @@ $DUCKDNS_DOMAIN.duckdns.org {
 
     # 日誌
     log {
-        output file /var/log/caddy/access.log {
-            roll_size 10mb
-            roll_keep 5
-        }
+        output file /var/log/caddy/access.log
         format json
-    }
-
-    # 請求限制
-    rate_limit {
-        zone static {
-            key {http.request.remote_host}
-            window 1m
-            events 100
-        }
     }
 }
 EOF
@@ -431,8 +420,52 @@ EOF
     if sudo caddy validate --config /etc/caddy/Caddyfile; then
         log_success "Caddy 配置驗證通過"
     else
-        log_error "Caddy 配置有誤"
-        exit 1
+        log_warning "高級配置驗證失敗，嘗試使用簡化配置..."
+
+        # 創建簡化的 Caddy 配置
+        sudo tee /etc/caddy/Caddyfile > /dev/null << EOF
+# Home Assistant 簡化 HTTPS 配置
+$DUCKDNS_DOMAIN.duckdns.org {
+    # 反向代理到 Home Assistant
+    reverse_proxy localhost:8123 {
+        # 放寬健康檢查
+        health_uri /
+        health_interval 60s
+        health_timeout 30s
+    }
+
+    # 基本安全頭
+    header X-Frame-Options "SAMEORIGIN"
+    header X-Content-Type-Options "nosniff"
+}
+EOF
+
+        # 再次驗證簡化配置
+        if sudo caddy validate --config /etc/caddy/Caddyfile; then
+            log_success "簡化 Caddy 配置驗證通過"
+        else
+            log_error "簡化 Caddy 配置仍有問題"
+            exit 1
+        fi
+    fi
+
+    # 等待 Home Assistant 完全啟動
+    log_info "等待 Home Assistant 完全啟動..."
+    local max_wait=120  # 最多等待2分鐘
+    local wait_time=0
+
+    while [ $wait_time -lt $max_wait ]; do
+        if curl -f -s http://localhost:8123 > /dev/null 2>&1; then
+            log_success "Home Assistant 已準備就緒"
+            break
+        fi
+        echo "等待 Home Assistant 啟動... ($wait_time/$max_wait 秒)"
+        sleep 10
+        wait_time=$((wait_time + 10))
+    done
+
+    if [ $wait_time -ge $max_wait ]; then
+        log_warning "Home Assistant 啟動較慢，但繼續啟動 Caddy"
     fi
 
     # 啟動 Caddy
@@ -440,7 +473,7 @@ EOF
     sudo systemctl start caddy
 
     # 等待 Caddy 啟動
-    sleep 5
+    sleep 10
 
     # 檢查 Caddy 狀態
     if sudo systemctl is-active --quiet caddy; then
@@ -449,7 +482,18 @@ EOF
     else
         log_error "Caddy 啟動失敗"
         log_info "檢查日誌: sudo journalctl -u caddy -f"
-        exit 1
+
+        # 嘗試重新啟動 Caddy
+        log_info "嘗試重新啟動 Caddy..."
+        sudo systemctl restart caddy
+        sleep 5
+
+        if sudo systemctl is-active --quiet caddy; then
+            log_success "Caddy 重新啟動成功"
+        else
+            log_warning "Caddy 仍無法啟動，但配置已保存"
+            log_info "您可以稍後手動啟動: sudo systemctl start caddy"
+        fi
     fi
 }
 
